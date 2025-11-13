@@ -65,7 +65,7 @@ model:
 # ============================================================================
 wandb:
   enabled: true
-  api_key: 'e6e318645396146a7688038762f84549eba42ccc'
+  api_key: '' # WANDB_API_KEY_HERE
   project_name: 'kernel-ot-learning'
   
   # Run metadata (can be set from command line or here)
