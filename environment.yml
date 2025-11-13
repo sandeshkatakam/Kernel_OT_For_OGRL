@@ -1,0 +1,45 @@
+name: kernel-ot-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python version
+  - python=3.10
+  
+  # Core Scientific Computing
+  - numpy::numpy
+  - scipy
+  - scikit-learn
+  
+  # PyTorch
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  
+  # Data & Environment
+  - h5py
+  - pyyaml
+  - tqdm
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - pillow
+  
+  # Jupyter & Notebooks
+  - jupyter
+  - jupyterlab
+  - ipython
+  - ipykernel
+  - nbconvert
+  
+  # Development & Testing
+  - pytest
+  - black
+  - flake8
+  
+  # System utilities
+  - curl
+  - git
+  - wget
+  - pip

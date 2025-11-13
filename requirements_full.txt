@@ -1,0 +1,58 @@
+# Complete pip-based requirements for Kernel OT Experiment
+# Use with: pip install -r requirements_full.txt
+
+# Core Scientific Stack
+numpy>=1.23.0
+scipy>=1.9.0
+scikit-learn>=1.1.0
+
+# PyTorch (select based on your system)
+# For CPU:
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# For GPU with CUDA 11.8, uncomment instead:
+# torch @ https://download.pytorch.org/whl/cu118/torch-2.1.1%2Bcu118-cp310-cp310-linux_x86_64.whl
+# torchvision @ https://download.pytorch.org/whl/cu118/torchvision-0.16.1%2Bcu118-cp310-cp310-linux_x86_64.whl
+# torchaudio @ https://download.pytorch.org/whl/cu118/torchaudio-2.1.1%2Bcu118-cp310-cp310-linux_x86_64.whl
+
+# RL & Environments
+d4rl>=1.1
+dm-control>=1.0
+gymnasium>=0.27.0
+mujoco>=2.3.0
+
+# Data & Format
+h5py>=3.6
+pyyaml>=6.0
+tqdm>=4.63
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+pillow>=9.0
+
+# Jupyter & Notebooks
+jupyter>=1.0.0
+jupyterlab>=3.4.0
+ipython>=8.0
+ipykernel>=6.0
+nbconvert>=7.0
+
+# Development & Testing
+pytest>=7.0
+black>=22.0
+flake8>=4.0
+mypy>=0.950
+
+# Additional utilities
+tensorboard>=2.11
+wandb>=0.13
+
+# Project-specific packages
+ogbench>=0.1.0
+
+# Optional for advanced features
+ray>=2.0
+optuna>=3.0

@@ -1,0 +1,122 @@
+# ============================================================================
+# Kernel OT for Offline Goal Conditioned RL - Experiment Configuration
+# ============================================================================
+# This config file contains all parameters for training experiments
+# Use with: python train.py --config config_experiments.yaml
+
+# ============================================================================
+# Environment Configuration
+# ============================================================================
+environment:
+  env_name: 'antmaze-large-navigate-v0'
+  num_goal_states: 1              # Single fixed goal state
+  num_transitions: 100000         # Number of transitions to load
+  maf_checkpoint: '/data1/sandesh/COT/OTFlowRL/ckpt_maf/best.pt'
+
+# ============================================================================
+# Output & Checkpointing
+# ============================================================================
+output:
+  base_output_dir: '/data1/sandesh/COT/Kernel_OT_for_OGRL/experiment_artifacts'
+  checkpoint_dir: 'kernel-ot-expt-terminal-only'  # Will be appended to base_output_dir
+  save_best_model: true
+  save_all_epochs: true
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+training:
+  num_epochs: 5
+  batch_size: 32
+  learning_rate: 0.0001
+  random_seed: 42
+  
+  # Gradient clipping
+  gradient_clip_norm: 0.5
+  gradient_clip_value: 0.1
+
+# ============================================================================
+# Loss Configuration
+# ============================================================================
+loss:
+  lambda_paired: 0.0              # Paired loss weight (disabled in Phase 2)
+  lambda_terminal: 1.0            # Terminal loss weight (enabled)
+
+# ============================================================================
+# Sampling Configuration
+# ============================================================================
+sampling:
+  m: 3                            # Samples per state for paired loss
+  T: 10                           # Rollout horizon for terminal loss
+  n_rollout_samples: 3            # Multiple independent rollouts
+
+# ============================================================================
+# Model Configuration
+# ============================================================================
+model:
+  state_dim: null                 # Auto-detected from data (don't modify)
+  action_dim: 8
+  n_mdn_components: 5             # MDN components for policy
+  hidden_dim: 256
+  device: null                    # Auto-detected (cuda:0 or cpu)
+
+# ============================================================================
+# Weights & Biases Configuration
+# ============================================================================
+wandb:
+  enabled: true
+  api_key: 'e6e318645396146a7688038762f84549eba42ccc'
+  project_name: 'kernel-ot-learning'
+  
+  # Run metadata (can be set from command line or here)
+  run_name: null                  # Leave null to auto-generate from timestamp
+  run_description: 'Kernel OT training with policy-augmented transition model'
+  tags: 
+    - 'kernel-ot'
+    - 'phase-2-terminal-loss'
+    - 'policy-augmented'
+  notes: 'Phase 2: Terminal loss optimization'
+
+# ============================================================================
+# GPU Configuration
+# ============================================================================
+gpu:
+  cuda_device: 0                  # GPU device ID
+  cuda_visible_devices: '0'       # CUDA_VISIBLE_DEVICES setting
+  per_process_memory_fraction: 0.9
+  enable_tf32: true               # Speed optimization
+
+# ============================================================================
+# Kernel Configuration
+# ============================================================================
+kernel:
+  type: 'IMQKernel'
+  alpha: 1.0                      # Kernel parameter
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+data:
+  train_val_split: 0.8            # 80% train, 20% val
+  transition_data_save_path: 'transition_data.pt'
+  goal_state_save_path: 'goal_states.pt'
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+logging:
+  log_file: 'experiment_log.txt'
+  log_every_n_batches: 500        # Log interval during training
+  validation_every_n_epochs: 1    # Validate every N epochs
+
+# ============================================================================
+# Experimental Metadata
+# ============================================================================
+experiment:
+  phase: 'Phase 2: Terminal Loss Optimization'
+  description: |
+    Improved terminal loss with kernel embedding matching.
+    Updates:
+    - Increased n_rollout_samples to 3 for better stochasticity
+    - Increased lambda_terminal to 1.0 for stronger goal-reaching incentive
+    - Reduced epochs to 5 for quicker experimentation

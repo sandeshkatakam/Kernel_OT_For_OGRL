@@ -1,0 +1,19 @@
+# Core Dependencies for Kernel OT Experiment
+# Install with: pip install -r requirements.txt
+
+# RL & Environments
+d4rl>=1.1
+dm-control>=1.0
+gymnasium>=0.27.0
+mujoco>=2.3.0
+
+# Additional PyTorch utilities
+tensorboard>=2.11
+wandb>=0.13
+
+# Additional packages
+ogbench>=0.1.0
+
+# Optional but useful
+ray>=2.0
+optuna>=3.0
