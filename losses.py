@@ -1,7 +1,7 @@
 """
-Loss Functions Module - UPDATED with Multi-GPU Support
-Implements paired loss and terminal loss with kernel embedding matching
-Supports parallelization of independent rollouts across multiple GPUs
+Loss Functions Module - UPDATED with Kernel MMD Loss
+Implements paired loss and terminal loss using Maximum Mean Discrepancy (MMD)
+with kernel trick for efficient computation
 """
 
 import torch
@@ -13,19 +13,19 @@ import numpy as np
 
 class PairedLoss:
     """
-    Paired Kernel Embedding Loss
+    Paired Kernel Embedding Loss using MMD (Maximum Mean Discrepancy)
     
-    L_paired = ||K(s'_gen_avg) - K(s'_data)||^2
+    L_paired = E_gen[k(gen, gen)] + E_data[k(data, data)] - 2*E_gen,data[k(gen, data)]
     
-    Matches kernel embeddings of generated next-states to observed next-states.
-    Enforces that the transition model generates realistic next-state distributions.
-    """
+    Represents squared MMD between generated next-state distribution and observed next-state distribution.
+    Uses kernel trick to avoid explicit feature map computation.
+    """ 
     
     def __init__(self, kernel, m=3, config=None):
         """
         Args:
             kernel: IMQKernel or other kernel instance
-            m: number of samples per state for averaging
+            m: number of samples per state
                larger m -> more stable embeddings, slower computation
             config: optional config dict for extraction of m value
         """
@@ -34,7 +34,7 @@ class PairedLoss:
         
     def __call__(self, model, s_data, s_next_data, device=None):
         """
-        Compute paired loss
+        Compute paired loss using kernel MMD
         
         Args:
             model: transition model with forward(s, n_samples) -> s'_samples
@@ -46,48 +46,59 @@ class PairedLoss:
             loss: scalar loss value
         """
         
-        # Generate m samples per state: s'_gen [batch_size, m, state_dim]
-        s_next_gen = model.forward(s_data, n_samples=self.m)
+        # 1. Generate m samples per state: gen [batch_size, m, state_dim]
+        gen = model.forward(s_data, n_samples=self.m)
         
-        # Average kernel embeddings: K(s'_gen_avg) [batch_size, 1]
-        # For each state i: avg over m generated samples
-        s_next_gen_avg = s_next_gen.mean(dim=1)  # [batch_size, state_dim]
+        batch_size = gen.shape[0]
+        state_dim = gen.shape[-1]
         
-        # Compute kernel embeddings
-        K_gen = self.kernel(s_next_gen_avg)    # [batch_size, batch_size]
-        K_data = self.kernel(s_next_data)      # [batch_size, batch_size]
+        # 2. Reshape to [batch_size * m, state_dim] for kernel computation
+        gen_flat = gen.reshape(batch_size * self.m, state_dim)
         
-        # L_paired = ||K(s'_gen) - K(s'_data)||^2
-        # Use full kernel matrices (not just diagonal)
-        # Diagonal is always 1.0 for IMQ kernel (K(x,x)=1), so use full matrix
-        loss = F.mse_loss(K_gen, K_data)
+        # 3. Compute A = E[k(gen, gen)]
+        # K_gg: [batch_size * m, batch_size * m]
+        K_gg = self.kernel(gen_flat, gen_flat)
+        A = K_gg.mean()
+        
+        # 4. Compute B = E[k(data, data)]
+        # K_tt: [batch_size, batch_size]
+        t = s_next_data
+        K_tt = self.kernel(t, t)
+        B = K_tt.mean()
+        
+        # 5. Compute C = (2/m) * E[k(gen, data)]
+        # K_gt: [batch_size * m, batch_size]
+        K_gt = self.kernel(gen_flat, t)
+        
+        # Average over the m samples for each state, then over batch
+        # Reshape to [batch_size, m, batch_size]
+        K_gt_per_state = K_gt.reshape(batch_size, self.m, batch_size)
+        # Average over m samples: [batch_size, batch_size]
+        K_gt_avg = K_gt_per_state.mean(dim=1)
+        # Average over all samples
+        C = (2.0 / self.m) * K_gt_avg.mean()
+        
+        # 6. Loss = A + B - C (squared MMD)
+        loss = A + B - C
         
         return loss
 
 
 class TerminalLoss:
     """
-    Terminal State Loss - OPTIMIZED FOR SPEED
+    Terminal State Loss using MMD with Kernel Trick - SINGLE GOAL VERSION
     
-    L_terminal = E[ min_j ||φ(s_terminal) - φ(goal_j)||^2 ]
+    ✅ FIXED: Works with SINGLE goal state only (extracted from dataset)
+    ✅ FIXED: Removed torch.min() to prevent mode collapse
     
-    where φ(x) = K(x, goal_states) is the kernel embedding vector
+    L_terminal = E[ A + B - C ]
     
-    Algorithm:
-    1. For each initial state: generate n_rollout_samples independent T-step rollouts
-    2. Each rollout maintains full stochasticity (no averaging within trajectory)
-    3. Compute kernel embeddings: K(s_terminal[k], goal_states) for each rollout k
-    4. Compute kernel embeddings: K(goal_states, goal_states)
-    5. For each rollout k and goal j: compute squared L2 distance in embedding space
-         ||φ(s_terminal[k]) - φ(goal[j])||_2^2 = ||K_terminal[k] - K_goal[j]||_2^2
-    6. Each rollout finds closest goal (minimum embedding distance)
-    7. Loss for state i: average minimum distances over all rollouts
+    For the single goal:
+    - A = E[k(rollout_terminal_states, rollout_terminal_states)]
+    - B = k(goal, goal)
+    - C = (2/m) * E[k(rollout_terminal_states, goal)]
     
-    OPTIMIZATIONS:
-    - Single GPU (avoid model movement overhead)
-    - Vectorized embeddings and distances
-    - Early exit for small batch sizes
-    - Efficient memory usage
+    Direct optimization toward the goal state without arbitrary attractors.
     """
     
     def __init__(self, kernel, T=5, n_rollout_samples=2, config=None):
@@ -96,21 +107,23 @@ class TerminalLoss:
             kernel: IMQKernel or other kernel instance
             T: rollout horizon (number of steps)
             n_rollout_samples: number of rollout trajectories per initial state
-                               larger -> better goal coverage estimate
+                               larger -> better stochasticity coverage
             config: optional config dict for parameter extraction
         """
         self.kernel = kernel
         self.T = T
         self.n_rollout_samples = n_rollout_samples
         
-    def __call__(self, model, s_init, goal_states, device=None):
+    def __call__(self, model, s_init, goal_state, device=None):
         """
-        Compute terminal loss using kernel embedding matching
+        Compute terminal loss using kernel MMD with SINGLE goal matching
+        
+        ✅ KEY CHANGE: goal_state is now a SINGLE goal, not multiple goals
         
         Args:
             model: transition model with forward(s, n_samples) -> s'_samples
             s_init: initial states [batch_size, state_dim]
-            goal_states: goal states [n_goals, state_dim]
+            goal_state: SINGLE goal state [state_dim] or [1, state_dim]
             device: torch device
         
         Returns:
@@ -118,78 +131,63 @@ class TerminalLoss:
         """
         
         batch_size = s_init.shape[0]
-        n_goals = goal_states.shape[0]
+        state_dim = s_init.shape[1]
         
-        # Early exit for empty goal states
-        if n_goals == 0:
-            return torch.tensor(0.0, device=device)
+        # ✅ FIX: Handle goal_state shape - ensure it's [1, state_dim]
+        if goal_state.dim() == 1:
+            goal_state = goal_state.unsqueeze(0)  # [state_dim] -> [1, state_dim]
+        
+        # Ensure goal is on same device as s_init
+        if device is not None:
+            goal_state = goal_state.to(device)
+        else:
+            goal_state = goal_state.to(s_init.device)
         
         loss_per_state = []
         
-        # Compute goal embeddings once (reuse for all initial states)
-        # K_goal: [n_goals, n_goals]
-        # Each row is the embedding vector for that goal state
-        K_goal = self.kernel(goal_states, goal_states)
-        
-        # For each initial state, generate multiple independent rollouts
+        # For each initial state, generate rollouts
         for i in range(batch_size):
             s_init_i = s_init[i:i+1]  # [1, state_dim]
             s_terminal_rollouts = []
             
-            # ===== Generate n_rollout_samples INDEPENDENT rollouts =====
+            # Generate n_rollout_samples independent rollouts
             for rollout_idx in range(self.n_rollout_samples):
                 s_current = s_init_i  # [1, state_dim]
                 
-                # Rollout T steps (maintaining full stochasticity)
+                # Rollout T steps
                 for t in range(self.T):
-                    # Sample ONE next state from the distribution
-                    s_next_sample = model.forward(s_current, n_samples=1)
-                    # [1, 1, state_dim]
-                    
-                    # Extract the single sample (remove the n_samples dimension)
+                    s_next_sample = model.forward(s_current, n_samples=1)  # [1, 1, state_dim]
                     s_current = s_next_sample.squeeze(1)  # [1, state_dim]
                 
-                # Terminal state of this rollout
                 s_terminal_rollouts.append(s_current.squeeze(0))  # [state_dim]
             
-            # ===== Stack terminal states from all rollouts =====
-            # [n_rollout_samples, state_dim]
-            s_terminal_samples = torch.stack(s_terminal_rollouts, dim=0)
+            # Stack rollouts: [n_rollout_samples, state_dim]
+            rollouts = torch.stack(s_terminal_rollouts, dim=0)
             
-            # ===== Compute kernel embeddings for terminal states =====
-            # Use goal_states as reference set for kernel embeddings
-            # K_terminal: [n_rollout_samples, n_goals]
-            # Each row k is the embedding vector for terminal state k
-            K_terminal = self.kernel(s_terminal_samples, goal_states)
+            # ✅ FIXED: Direct computation without torch.min()
+            # Compute MMD between rollout terminal states and SINGLE goal
             
-            # ===== Vectorized embedding distance computation =====
-            # For each terminal state k and goal j:
-            # distance[k, j] = ||φ(s_T[k]) - φ(goal[j])||_2^2
-            #                = ||K_terminal[k] - K_goal[j]||_2^2
-            #                = sum_m (K_terminal[k,m] - K_goal[j,m])^2
+            # A = E[k(rollouts, rollouts)]
+            K_rr = self.kernel(rollouts, rollouts)  # [m, m]
+            A = K_rr.mean()
             
-            # Expand for broadcasting
-            # K_terminal_exp: [n_rollout_samples, 1, n_goals]
-            # K_goal_exp: [1, n_goals, n_goals]
-            K_terminal_exp = K_terminal.unsqueeze(1)  # [n_rollout_samples, 1, n_goals]
-            K_goal_exp = K_goal.unsqueeze(0)  # [1, n_goals, n_goals]
+            # B = k(goal, goal) - constant term depending only on goal
+            K_gg = self.kernel(goal_state, goal_state)  # [1, 1]
+            B = K_gg.squeeze()
             
-            # Compute embedding differences: [n_rollout_samples, n_goals, n_goals]
-            emb_diff = K_terminal_exp - K_goal_exp
+            # C = (2/m) * E[k(rollouts, goal)]
+            # This is the KEY term: it measures how close rollouts are to goal
+            K_rg = self.kernel(rollouts, goal_state)  # [m, 1]
+            C = (2.0 / self.n_rollout_samples) * K_rg.mean()
             
-            # Squared L2 distances: [n_rollout_samples, n_goals]
-            # emb_dist_sq[k, j] = sum_m (emb_diff[k, j, m])^2
-            emb_dist_sq = torch.sum(emb_diff ** 2, dim=2)
-            
-            # For each rollout k, find minimum distance to any goal j
-            # min_dist_per_rollout: [n_rollout_samples]
-            min_dist_per_rollout = torch.min(emb_dist_sq, dim=1).values
-            
-            # Loss for this state: mean over rollouts
-            loss_i = min_dist_per_rollout.mean()
-            loss_per_state.append(loss_i)
+            # ✅ FIXED: Direct MMD loss (NO torch.min())
+            # Loss = A + B - C
+            # - When rollouts close to goal: K_rg large → C large → loss small ✓
+            # - When rollouts far from goal: K_rg small → C small → loss large ✗
+            mmd_loss_i = A + B - C
+            loss_per_state.append(mmd_loss_i)
         
-        # Final loss: mean over states
+        # Final loss: mean over all initial states
         loss = torch.stack(loss_per_state).mean()
         
         return loss
@@ -236,17 +234,19 @@ class CombinedLoss:
         )
         
     def __call__(self, model, s_data, s_next_data, s_init_terminal, 
-                 goal_states, use_terminal=True, device=None):
+                 goal_state, use_terminal=True, device=None):
         """
         Compute combined loss
+        
+        ✅ CHANGED: goal_states -> goal_state (SINGLE goal now)
         
         Args:
             model: transition model
             s_data: data states [batch_size, state_dim]
             s_next_data: data next states [batch_size, state_dim]
             s_init_terminal: initial states for terminal loss rollout
-            goal_states: goal states [n_goals, state_dim]
-            use_terminal: whether to include terminal loss (can skip every N batches)
+            goal_state: SINGLE goal state [state_dim] or [1, state_dim]
+            use_terminal: whether to include terminal loss
             device: torch device
         
         Returns:
@@ -258,10 +258,11 @@ class CombinedLoss:
         loss_paired = self.paired_loss(model, s_data, s_next_data, device=device)
         
         # L_terminal: compute if requested
-        loss_terminal = torch.tensor(0.0, device=device)
+        loss_terminal = torch.tensor(0.0, device=device if device is not None else s_data.device)
         if use_terminal:
+            # ✅ FIXED: Pass single goal_state instead of goal_states
             loss_terminal = self.terminal_loss(
-                model, s_init_terminal, goal_states, device=device
+                model, s_init_terminal, goal_state, device=device
             )
         
         # L_total = lambda_paired * L_paired + lambda_terminal * L_terminal
