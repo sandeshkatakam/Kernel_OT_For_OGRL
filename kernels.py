@@ -11,49 +11,60 @@ class IMQKernel(nn.Module):
     """
     Inverse Multi-Quadratic (IMQ) Kernel
     
-    K(x, y) = 1 / (1 + alpha * ||x - y||^2)
+    K(x, y) = (c + ||x - y||^2)^(-beta)
     
-    This kernel is FIXED (not trainable) and serves as the embedding metric
+    This kernel is FIXED (non-learnable) and serves as the embedding metric
     for matching kernel embeddings across transitions and goals.
     
     Reference: Gretton et al., "A Kernel Method for the Two-Sample Problem" (2012)
     """
     
-    def __init__(self, alpha=1.0):
+    def __init__(self, alpha=1.0, c=1.0, beta=0.5):
         """
         Args:
-            alpha: bandwidth parameter, controls kernel width
-                   larger alpha -> smoother kernel
-                   typically 1.0 works well
+            alpha: legacy parameter (deprecated, kept for backward compatibility)
+            c: offset parameter, controls kernel offset
+               larger c -> smoother kernel
+               typically 1.0 works well
+            beta: power parameter, controls kernel decay rate
+                  typically 0.5 works well
         """
         super().__init__()
-        self.alpha = alpha
-        self.register_buffer('_alpha', torch.tensor(alpha))
+        self.c = c
+        self.beta = beta
+        self.alpha = alpha  # kept for backward compatibility
+        self.register_buffer('_c', torch.tensor(c))
+        self.register_buffer('_beta', torch.tensor(beta))
         
-    def forward(self, x, y=None):
+    def forward(self, x, y=None, c=None, beta=None):
         """
         Compute IMQ kernel between points
         
-        K(x,y) = 1 / (1 + alpha * ||x - y||^2)
+        K(x,y) = (c + ||x - y||^2)^(-beta)
         
         Args:
-            x: tensor of shape [n, d] or [n, m, d]
-            y: tensor of shape [m, d] or [n, m, d]
+            x: tensor of shape [n, d]
+            y: tensor of shape [m, d]
                if None, computes self-similarity
+            c: optional override for c parameter
+            beta: optional override for beta parameter
         
         Returns:
-            K: kernel matrix of shape [n, m] or [n, m, 1]
+            K: kernel matrix of shape [n, m]
         """
         
         if y is None:
             y = x
         
+        # Use provided parameters or defaults
+        c_val = torch.tensor(c) if c is not None else self._c
+        beta_val = torch.tensor(beta) if beta is not None else self._beta
+        
         # Compute squared Euclidean distance: ||x - y||^2
-        # Broadcasting: [n, d] x [m, d] -> [n, m]
         dist_sq = self._pairwise_dist_sq(x, y)
         
-        # K(x,y) = 1 / (1 + alpha * ||x - y||^2)
-        kernel = 1.0 / (1.0 + self._alpha * dist_sq)
+        # K(x,y) = (c + ||x - y||^2)^(-beta)
+        kernel = torch.pow(c_val + dist_sq, -beta_val)
         
         return kernel
     
@@ -84,6 +95,7 @@ class IMQKernel(nn.Module):
         dist_sq = torch.clamp(dist_sq, min=0.0)
         
         return dist_sq
+
 
 
 class RBFKernel(nn.Module):
